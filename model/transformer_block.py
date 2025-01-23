@@ -11,6 +11,53 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+class CrossAttention(nn.Module):
+    def __init__(self, input_dim_q, input_dim_kv, hidden_size=32, num_heads=4):
+        super(CrossAttention, self).__init__()
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.scale = np.sqrt(self.head_dim)
+
+        # Linear projections for Q, K, V
+        self.q_proj = nn.Linear(input_dim_q, hidden_size)  # Query projection
+        self.k_proj = nn.Linear(input_dim_kv, hidden_size)  # Key projection
+        self.v_proj = nn.Linear(input_dim_kv, hidden_size)  # Value projection
+        self.out_proj = nn.Linear(hidden_size, input_dim_q)  # Output projection
+
+    def forward(self, query, key_value):
+        """
+        Args:
+            query: Tensor of shape [batch_size, seq_len_q, input_dim_q]
+            key_value: Tensor of shape [batch_size, seq_len_kv, input_dim_kv]
+        Returns:
+            output: Tensor of shape [batch_size, seq_len_q, input_dim_q]
+        """
+        batch_size, seq_len_q, _ = query.shape
+        seq_len_kv = key_value.shape[1]
+
+        # Linear projections
+        q = self.q_proj(query).view(batch_size, seq_len_q, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+
+        k = self.k_proj(key_value).view(batch_size, seq_len_kv, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        v = self.v_proj(key_value).view(batch_size, seq_len_kv, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+
+        # Attention scores: [batch_size, num_heads, seq_len_q, seq_len_kv]
+        attention_scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+
+        # Attention weights: [batch_size, num_heads, seq_len_q, seq_len_kv]
+        attention_weights = F.softmax(attention_scores, dim=-1)
+
+        # Attention output: [batch_size, num_heads, seq_len_q, head_dim]
+        attention_output = torch.matmul(attention_weights, v)
+
+        # Combine heads and project back to input_dim_q
+        attention_output = attention_output.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len_q, -1)
+        output = self.out_proj(attention_output)
+
+        return output
+    
+    
 class MultiHeadAttention(nn.Module):
     def __init__(self, embed_dim, num_heads):
         super(MultiHeadAttention, self).__init__()
@@ -56,11 +103,6 @@ class MultiHeadAttention(nn.Module):
         return output
 
 
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 class TransformerEncoderLayer(nn.Module):
     def __init__(self, embed_dim, num_heads, ff_dim, dropout=0.1):
@@ -124,7 +166,6 @@ class TransformerEncoderLayer_decay(nn.Module):
         # 前馈神经网络：残差连接 + LayerNorm
         ffn_output = self.ffn(x)
         x = self.norm2(self.dropout(ffn_output))
-        print(x.shape)
         return x
     
 
@@ -192,15 +233,16 @@ class TransformerDecoderLayercat(nn.Module):
 
 
 
+
 class TransformerDecoderLayer(nn.Module):
-    def __init__(self, embed_dim, num_heads, ff_dim, dropout=0.1):
+    def __init__(self, embed_dim,enc_num, num_heads, ff_dim, dropout=0.1):
         super(TransformerDecoderLayer, self).__init__()
-        
+        self.embed_dim = embed_dim
         # 多头自注意力
         self.self_attention = MultiHeadAttention(embed_dim, num_heads)
         
         # Encoder-Decoder Attention
-        self.encoder_decoder_attention = MultiHeadAttention(embed_dim, num_heads)
+        self.encoder_decoder_attention = CrossAttention(embed_dim,enc_num)
         
         # 前馈神经网络
         self.ffn = nn.Sequential(
@@ -220,19 +262,14 @@ class TransformerDecoderLayer(nn.Module):
     def forward(self, x, enc_output, self_mask=None, enc_mask=None):
         # Self-Attention
         _x = x
-        print(x.shape)
         x = self.self_attention(query=x, key=x, value=x, mask=self_mask)
-        
+
         x = self.dropout(x)
-        print(x.shape)
         x = self.norm1(x + _x)
-        print(x.shape)
-        # Encoder-Decoder Attention
         _x = x
-        enc_output = enc_output.permute(0, 2, 1)
+
     
-        print(x.shape)
-        x = self.encoder_decoder_attention(query=x, key=enc_output, value=enc_output, mask=enc_mask)
+        x = self.encoder_decoder_attention(query=x, key_value=enc_output)
         x = self.dropout(x)
         x = self.norm2(x + _x)
 
@@ -241,10 +278,12 @@ class TransformerDecoderLayer(nn.Module):
         x = self.ffn(x)
         x = self.dropout(x)
         x = self.norm3(x + _x)
-        x = x.squeeze(-1)
-        x = nn.Linear(x.shape[1],1)(x)
-        return x
 
+        x = x.view(x.shape[0], -1)
+        linear_layer = nn.Linear(x.shape[1], self.embed_dim).cuda()  # 或 .to('cuda')
+        x = linear_layer(x)
+
+        return x
 
 
 class TransformerDecoder(nn.Module):
