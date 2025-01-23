@@ -158,9 +158,9 @@ class TransformerEncoder(nn.Module):
 
 
 
-class TransformerDecoderLayer(nn.Module):
+class TransformerDecoderLayercat(nn.Module):
     def __init__(self, embed_dim, num_heads, ff_dim, dropout=0.1):
-        super(TransformerDecoderLayer, self).__init__()
+        super(TransformerDecoderLayercat, self).__init__()
         
         # 多头自注意力
         self.self_attention = MultiHeadAttention(embed_dim, num_heads)
@@ -189,6 +189,63 @@ class TransformerDecoderLayer(nn.Module):
         attn_output = nn.Linear(attn_output.shape[1],1)(attn_output)  
         
         return x
+
+
+
+class TransformerDecoderLayer(nn.Module):
+    def __init__(self, embed_dim, num_heads, ff_dim, dropout=0.1):
+        super(TransformerDecoderLayer, self).__init__()
+        
+        # 多头自注意力
+        self.self_attention = MultiHeadAttention(embed_dim, num_heads)
+        
+        # Encoder-Decoder Attention
+        self.encoder_decoder_attention = MultiHeadAttention(embed_dim, num_heads)
+        
+        # 前馈神经网络
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, ff_dim),
+            nn.ReLU(),
+            nn.Linear(ff_dim, embed_dim)
+        )
+        
+        # 层归一化
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.norm3 = nn.LayerNorm(embed_dim)
+        
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x, enc_output, self_mask=None, enc_mask=None):
+        # Self-Attention
+        _x = x
+        print(x.shape)
+        x = self.self_attention(query=x, key=x, value=x, mask=self_mask)
+        
+        x = self.dropout(x)
+        print(x.shape)
+        x = self.norm1(x + _x)
+        print(x.shape)
+        # Encoder-Decoder Attention
+        _x = x
+        enc_output = enc_output.permute(0, 2, 1)
+    
+        print(x.shape)
+        x = self.encoder_decoder_attention(query=x, key=enc_output, value=enc_output, mask=enc_mask)
+        x = self.dropout(x)
+        x = self.norm2(x + _x)
+
+        # Feed-Forward Network
+        _x = x
+        x = self.ffn(x)
+        x = self.dropout(x)
+        x = self.norm3(x + _x)
+        x = x.squeeze(-1)
+        x = nn.Linear(x.shape[1],1)(x)
+        return x
+
+
 
 class TransformerDecoder(nn.Module):
     def __init__(self, num_layers, embed_dim, num_heads, ff_dim, dropout=0.1):
