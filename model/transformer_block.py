@@ -105,12 +105,12 @@ class MultiHeadAttention(nn.Module):
 
 
 class TransformerEncoderLayer(nn.Module):
-    def __init__(self, embed_dim, num_heads, ff_dim, dropout=0.1):
+    def __init__(self, embed_dim, num_heads, ff_dim, dropout=0.1,device='cuda'):
         super(TransformerEncoderLayer, self).__init__()
         
         # Multi-Head Attention
         self.self_attention = MultiHeadAttention(embed_dim, num_heads)
-        
+        self.device = device
         # 前馈神经网络
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, ff_dim),
@@ -124,23 +124,23 @@ class TransformerEncoderLayer(nn.Module):
         
         # Dropout
         self.dropout = nn.Dropout(dropout)
-    
-    def forward(self, x, mask=None):
 
+    def forward(self, x, mask=None):
+        linear_layer = nn.Linear(x.shape[0], 1).to(self.device)  # 从 1000 维变到 1 维
         attn_output = self.self_attention(x, x, x, mask)
         x = self.norm1(x + self.dropout(attn_output))
         
         # 前馈神经网络：残差连接 + LayerNorm
         ffn_output = self.ffn(x)
         x = self.norm2(x + self.dropout(ffn_output))
-        print(x.shape)
-        return x
+        p1_transformed = linear_layer(x.transpose(1, 2)).squeeze(-1)  # 输出形状变为 (1000, 8)
+        return p1_transformed
 
 
 class TransformerEncoderLayer_decay(nn.Module):
-    def __init__(self, embed_dim,output_dim,num_heads, ff_dim, dropout=0.1):
+    def __init__(self, embed_dim,output_dim,num_heads, ff_dim, dropout=0.1,device='cuda'):
         super(TransformerEncoderLayer_decay, self).__init__()
-        
+        self.device = device
         # Multi-Head Attention
         self.self_attention = MultiHeadAttention(embed_dim, num_heads)
         
@@ -159,14 +159,15 @@ class TransformerEncoderLayer_decay(nn.Module):
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, x, mask=None):
-
+        linear_layer = nn.Linear(x.shape[0], 1).to(self.device)  # 从 1000 维变到 1 维
         attn_output = self.self_attention(x, x, x, mask)
         x = self.norm1(x + self.dropout(attn_output))
         
         # 前馈神经网络：残差连接 + LayerNorm
         ffn_output = self.ffn(x)
         x = self.norm2(self.dropout(ffn_output))
-        return x
+        p1_transformed = linear_layer(x.transpose(1, 2)).squeeze(-1)  # 输出形状变为 (1000, 8)
+        return p1_transformed
     
 
 
@@ -190,9 +191,11 @@ class TransformerEncoder(nn.Module):
         if self.ifdecay:
             for layers in self.embedd_decay:
                 x = layers(x,mask)
+
         else:
             for layer in self.layers:
                 x = layer(x, mask)
+
         return x
 
 
@@ -224,11 +227,58 @@ class TransformerDecoderLayercat(nn.Module):
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, x, enc_output, self_mask=None, enc_mask=None):
-        print(enc_output.shape)
+
         enc_output = enc_output.squeeze(1)
         attn_output = torch.concat([x, enc_output], dim=1)
         attn_output = nn.Linear(attn_output.shape[1],1)(attn_output)  
         
+        return x
+
+
+
+
+class TransformerDecoderLayer_pre(nn.Module):
+    def __init__(self, embed_dim, enc_num, num_heads, ff_dim, dropout=0.1):
+        super(TransformerDecoderLayer_pre, self).__init__()
+        self.embed_dim = embed_dim
+        self.self_attention = MultiHeadAttention(embed_dim, num_heads)
+        self.encoder_decoder_attention = CrossAttention(embed_dim, enc_num)
+        self.positional_encoding = nn.Parameter(torch.randn(1, 2000, embed_dim))  # 动态位置编码
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, ff_dim),
+            nn.ReLU(),
+            nn.Linear(ff_dim, embed_dim)
+        )
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.norm3 = nn.LayerNorm(embed_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, enc_output, self_mask=None, enc_mask=None):
+        # 加入位置编码
+        seq_len = x.size(0)
+        x = x.unsqueeze(0)
+        enc_output = enc_output.unsqueeze(1)
+        x = x + self.positional_encoding[:, :seq_len, :]
+        x = x.permute(1, 0, 2)
+        _x = x
+
+        x = self.self_attention(query=x, key=x, value=x, mask=self_mask)
+        x = self.dropout(x)
+        x = self.norm1(x + _x)
+        _x = x
+        x = self.encoder_decoder_attention(query=x, key_value=enc_output)
+        x = self.dropout(x)
+        x = self.norm2(x + _x)
+
+        _x = x
+        x = self.ffn(x)
+        x = self.dropout(x)
+        x = self.norm3(x + _x)
+
+        x = x.view(x.shape[0], -1)
+        linear_layer = nn.Linear(x.shape[1], self.embed_dim).cuda()  # 或 .to('cuda')
+        x = linear_layer(x)
         return x
 
 
@@ -260,7 +310,9 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, x, enc_output, self_mask=None, enc_mask=None):
-        # Self-Attention
+        x = x.unsqueeze(1)
+        enc_output = enc_output.unsqueeze(1)
+    
         _x = x
         x = self.self_attention(query=x, key=x, value=x, mask=self_mask)
 
@@ -287,12 +339,12 @@ class TransformerDecoderLayer(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, num_layers, embed_dim, num_heads, ff_dim, dropout=0.1):
+    def __init__(self, num_layers, decoder_embed_dim,embed_dim, num_heads, ff_dim, dropout=0.1):
         super(TransformerDecoder, self).__init__()
         
         # 创建多个 Transformer Decoder 层
         self.layers = nn.ModuleList([
-            TransformerDecoderLayer(embed_dim, num_heads, ff_dim, dropout)
+            TransformerDecoderLayer(decoder_embed_dim, embed_dim,num_heads, ff_dim, dropout)
             for _ in range(num_layers)
         ])
         
@@ -304,12 +356,12 @@ class TransformerDecoder(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, num_layers, embed_dim,decoder_embed_dim, num_heads, ff_dim, dropout=0.1):
+    def __init__(self, num_layers, embed_dim,decoder_embed_dim, num_heads, ff_dim, dropout=0.1,ifdecay=False):
         super(TransformerBlock, self).__init__()
         
         # Encoder 和 Decoder
-        self.encoder = TransformerEncoder(num_layers, embed_dim, num_heads, ff_dim, dropout)
-        self.decoder = TransformerDecoder(num_layers, decoder_embed_dim, num_heads, ff_dim, dropout)
+        self.encoder = TransformerEncoder(num_layers, embed_dim, num_heads, ff_dim, dropout,ifdecay)
+        self.decoder = TransformerDecoder(num_layers, decoder_embed_dim,self.encoder.embedddecay_list[-1], num_heads, ff_dim, dropout)
         self.embedding_layer = nn.Embedding(101, embed_dim)
         
     def forward(self, src, tgt, src_mask=None, tgt_mask=None, memory_mask=None):
