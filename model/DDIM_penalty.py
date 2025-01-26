@@ -20,7 +20,7 @@ class con_Backbone(nn.Module):
     def __init__(self, n_steps, input_dim = 1,con_dim=4):
         super().__init__()
         self.linear_model1 = nn.Sequential(
-            nn.Linear(input_dim+con_dim, 32),
+            nn.Linear(input_dim+con_dim+1, 32),
             nn.ReLU()
         )
         # Condition time t
@@ -38,8 +38,9 @@ class con_Backbone(nn.Module):
             
             nn.Linear(32, input_dim),
         )
-    def forward(self, x, con_x,idx):   
-        x = torch.cat((x, con_x), dim=1) 
+    def forward(self, x, con_x,alpha,idx):   
+        x = torch.cat((x, con_x), dim=1)
+        x= torch.cat((x,alpha),dim=1) 
         x = torch.cat((self.linear_model1(x)+self.embedding_layer(idx),con_x),dim = 1)
         x = self.linear_model2(x)
         return x
@@ -109,9 +110,9 @@ class DDIM_penalty(nn.Module):
             idx = torch.Tensor([idx for _ in range(x.size(0))]).to(device = self.device).long()
             x_tilde = x
             
-
+        alphal = torch.Tensor([self.alpha for _ in range(x.size(0))]).to(device = self.device).reshape(-1,1)    
             
-        output = self.backbone(x_tilde, con_x,idx)
+        output = self.backbone(x_tilde, con_x,alphal,idx)
         
         return (output, epsilon, used_alpha_bars) if get_target else output
     
@@ -138,8 +139,7 @@ class DDIM_penalty(nn.Module):
         '''
         diffusion_process = self._get_process_scheduling(reverse=True)  # 获取时间步调度
         for prev_idx, idx in diffusion_process:
-            
-            predict_epsilon = self.forward(x,con_x, idx)
+            predict_epsilon = self.forward(x, con_x,idx)
             
             predicted_x0 =  (
                 (x - torch.sqrt(1 - self.alpha_bars[idx]) * predict_epsilon) 

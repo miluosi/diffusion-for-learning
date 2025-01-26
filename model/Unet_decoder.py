@@ -255,3 +255,198 @@ class UNet1DWithAttention(nn.Module):
         x = linear_layer(x.squeeze(1)) 
         return x
 
+
+
+
+class UNet1DWithAttentionLSTM(nn.Module):
+    def __init__(self, input_dim, condition_dim, hidden_dims=(64, 128, 256), lstm_hidden_dim=128):
+        super(UNet1DWithAttentionLSTM, self).__init__()
+        self.encoders = nn.ModuleList()
+        self.attention_layers = nn.ModuleList()  # Attention layers in the encoder
+        self.decoders = nn.ModuleList()
+        self.condition_transform = nn.Linear(condition_dim, hidden_dims[-1])
+        self.input_dim = input_dim
+        
+        # LSTM module for preprocessing
+        self.lstm = nn.LSTM(input_dim, lstm_hidden_dim, batch_first=True)
+        
+        # Encoder layers
+        in_channels = 1
+        for h_dim in hidden_dims:
+            self.encoders.append(
+                nn.Sequential(
+                    nn.Conv1d(in_channels, h_dim, kernel_size=3, stride=1, padding=1),
+                    nn.ReLU(),
+                    nn.MaxPool1d(kernel_size=2, stride=2, padding=1)  # Adjust padding
+                )
+            )
+            self.attention_layers.append(SelfAttention(h_dim))  # Add self-attention layer
+            in_channels = h_dim
+
+        # Bottleneck
+        self.bottleneck = nn.Sequential(
+            nn.Conv1d(hidden_dims[-1], hidden_dims[-1], kernel_size=3, stride=1, padding=1),
+            nn.ReLU()
+        )
+        self.bottleneck_attention = SelfAttention(hidden_dims[-1])  # Attention in bottleneck
+
+        # Decoder layers
+        for i, h_dim in enumerate(reversed(hidden_dims)):
+            self.decoders.append(
+                nn.Sequential(
+                    nn.ConvTranspose1d(h_dim*2, h_dim//2, kernel_size=2, stride=2),  # Match channels here
+                    nn.ReLU()
+                )
+            )
+
+        # Final layer should produce output with 1 channel
+        self.final_layer = nn.Conv1d(hidden_dims[0]//2, 1, kernel_size=1)
+        
+        # LSTM module for postprocessing (output prediction)
+        self.lstm_out = nn.LSTM(lstm_hidden_dim, lstm_hidden_dim, batch_first=True)
+        self.fc_out = nn.Linear(lstm_hidden_dim, input_dim)
+
+    def forward(self, x, condition):
+        # LSTM preprocessing
+        x_lstm, _ = self.lstm(x)  # Apply LSTM to input
+        x_lstm = x_lstm.permute(0, 2, 1)  # Adjust shape for further processing
+
+        # Reshape input to [batch_size, 1, input_dim]
+        x = x.unsqueeze(1)
+        
+        # Encoder
+        encodings = []
+        for i, encoder in enumerate(self.encoders):
+            x = encoder(x)
+            x = x.permute(0, 2, 1) 
+            x = self.attention_layers[i](x)  # Apply self-attention
+            x = x.permute(0, 2, 1)
+            encodings.append(x)
+
+        # Bottleneck
+        condition_vector = self.condition_transform(condition).unsqueeze(-1)
+        x = self.bottleneck(x + condition_vector)
+        x = x.permute(0, 2, 1) 
+        x = self.bottleneck_attention(x)  # Apply self-attention in bottleneck
+        x = x.permute(0, 2, 1) 
+
+        # Decoder with skip connections
+        for i, decoder in enumerate(self.decoders):
+            # Skip connection: get the corresponding encoding
+            skip_encoding = encodings[-(i+1)]  # Get encoding from corresponding encoder layer
+            
+            # Ensure skip encoding is the same size as the current x
+            if skip_encoding.size(2) != x.size(2):
+                skip_encoding = F.interpolate(skip_encoding, size=x.size(2), mode='linear', align_corners=False)
+
+            # Concatenate skip connection with decoder output
+            x = torch.cat([x, skip_encoding], dim=1)
+            x = decoder(x)
+
+        # Final output: Ensure output has a single channel
+        x = self.final_layer(x)
+
+        # Postprocessing with LSTM for better temporal understanding
+        x_lstm_out, _ = self.lstm_out(x.permute(0, 2, 1))  # Apply LSTM on output from decoder
+        x_lstm_out = x_lstm_out[:, -1, :]  # Get the last output from LSTM
+        x = self.fc_out(x_lstm_out)  # Output prediction layer
+
+        return x
+
+
+class UNet1DWithAttentionLSTM(nn.Module):
+    def __init__(self, input_dim, condition_dim, hidden_dims=(64, 128, 256), lstm_hidden_dim=128):
+        super(UNet1DWithAttentionLSTM, self).__init__()
+        self.encoders = nn.ModuleList()
+        self.attention_layers = nn.ModuleList()  # Attention layers in the encoder
+        self.decoders = nn.ModuleList()
+        self.condition_transform = nn.Linear(condition_dim, hidden_dims[-1])
+        self.input_dim = input_dim
+        self.lstm_hidden_dim = lstm_hidden_dim
+        # LSTM module for preprocessing
+        self.lstm = nn.LSTM(input_dim, lstm_hidden_dim, batch_first=True)
+        
+        # Encoder layers
+        in_channels = 1
+        for h_dim in hidden_dims:
+            self.encoders.append(
+                nn.Sequential(
+                    nn.Conv1d(in_channels, h_dim, kernel_size=3, stride=1, padding=1),
+                    nn.ReLU(),
+                    nn.MaxPool1d(kernel_size=2, stride=2, padding=1)  # Adjust padding
+                )
+            )
+            self.attention_layers.append(SelfAttention(h_dim))  # Add self-attention layer
+            in_channels = h_dim
+
+        # Bottleneck
+        self.bottleneck = nn.Sequential(
+            nn.Conv1d(hidden_dims[-1], hidden_dims[-1], kernel_size=3, stride=1, padding=1),
+            nn.ReLU()
+        )
+        self.bottleneck_attention = SelfAttention(hidden_dims[-1])  # Attention in bottleneck
+
+        # Decoder layers
+        for i, h_dim in enumerate(reversed(hidden_dims)):
+            self.decoders.append(
+                nn.Sequential(
+                    nn.ConvTranspose1d(h_dim*2, h_dim//2, kernel_size=2, stride=2),  # Match channels here
+                    nn.ReLU()
+                )
+            )
+
+        # Final layer should produce output with 1 channel
+        self.final_layer = nn.Conv1d(hidden_dims[0]//2, 1, kernel_size=1)
+        
+        # LSTM module for postprocessing (output prediction)
+        self.lstm_out = nn.LSTM(lstm_hidden_dim, lstm_hidden_dim, batch_first=True)
+        self.fc_out = nn.Linear(lstm_hidden_dim, input_dim)
+
+    def forward(self, x, condition):
+        x_lstm, _ = self.lstm(x)  # Apply LSTM to input
+
+
+
+        # Reshape input to [batch_size, 1, input_dim]
+        x = x.unsqueeze(1)
+        
+        # Encoder
+        encodings = []
+        for i, encoder in enumerate(self.encoders):
+            x = encoder(x)
+            x = x.permute(0, 2, 1) 
+            x = self.attention_layers[i](x)  # Apply self-attention
+            x = x.permute(0, 2, 1)
+            encodings.append(x)
+
+        # Bottleneck
+        condition_vector = self.condition_transform(condition).unsqueeze(-1)
+        x = self.bottleneck(x + condition_vector)
+        x = x.permute(0, 2, 1) 
+        x = self.bottleneck_attention(x)  # Apply self-attention in bottleneck
+        x = x.permute(0, 2, 1) 
+
+        # Decoder with skip connections
+        for i, decoder in enumerate(self.decoders):
+            # Skip connection: get the corresponding encoding
+            skip_encoding = encodings[-(i+1)]  # Get encoding from corresponding encoder layer
+            
+            # Ensure skip encoding is the same size as the current x
+            if skip_encoding.size(2) != x.size(2):
+                skip_encoding = F.interpolate(skip_encoding, size=x.size(2), mode='linear', align_corners=False)
+
+            # Concatenate skip connection with decoder output
+            x = torch.cat([x, skip_encoding], dim=1)
+            x = decoder(x)
+
+        # Final output: Ensure output has a single channel
+        x = self.final_layer(x)
+        x = x.squeeze(1)
+        lstmnn = nn.LSTM(x.shape[1], self.lstm_hidden_dim, batch_first=True).cuda()
+        # Postprocessing with LSTM for better temporal understanding
+        x_lstm_out, _ = lstmnn(x)  # Apply LSTM on output from decoder
+        x = self.fc_out(x_lstm_out)  # Output prediction layer
+
+        return x
+
+

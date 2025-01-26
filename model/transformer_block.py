@@ -134,6 +134,7 @@ class TransformerEncoderLayer(nn.Module):
         ffn_output = self.ffn(x)
         x = self.norm2(x + self.dropout(ffn_output))
         p1_transformed = linear_layer(x.transpose(1, 2)).squeeze(-1)  # 输出形状变为 (1000, 8)
+        print(p1_transformed.shape)
         return p1_transformed
 
 
@@ -174,9 +175,14 @@ class TransformerEncoderLayer_decay(nn.Module):
 class TransformerEncoder(nn.Module):
     def __init__(self, num_layers, embed_dim, num_heads, ff_dim, dropout=0.1,ifdecay=False):
         super(TransformerEncoder, self).__init__()
-        self.embedddecay_list = [embed_dim - i * (embed_dim // num_layers) for i in range(num_layers)]
-
-
+        if ifdecay:
+            self.embedddecay_list = [embed_dim - i * (embed_dim // num_layers) for i in range(num_layers)]
+        else:
+            self.embedddecay_list = [embed_dim for i in range(num_layers)]
+        if self.embedddecay_list[-1] <=0 :
+            raise ValueError("The last layer's embed_dim is less than 0")
+        if embed_dim==1 and ifdecay:
+            raise ValueError("The embed_dim is 1, cannot decay")
         self.embedd_decay = nn.ModuleList([
             TransformerEncoderLayer_decay(self.embedddecay_list[i],self.embedddecay_list[i+1], num_heads, ff_dim, dropout)
             for i in range(num_layers-1)])
